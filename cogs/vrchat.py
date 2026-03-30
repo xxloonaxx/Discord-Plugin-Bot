@@ -74,7 +74,9 @@ class VRChatCog(commands.Cog):
             raise RuntimeError("VRChat session nicht initialisiert.")
 
         headers = kwargs.pop("headers", {})
-        headers.setdefault("User-Agent", self.user_agent)
+        # VRChat WAF verlangt einen eigenen, klar formatierten User-Agent.
+        # setdefault reicht hier nicht, da aiohttp sonst seinen Standard-UA behält.
+        headers["User-Agent"] = self.user_agent
         if self.auth_header:
             headers["Authorization"] = self.auth_header
         url = f"{self.api_base}{endpoint}"
