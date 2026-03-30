@@ -63,6 +63,7 @@ class MusicCog(commands.Cog):
 
         # --- EINSTELLUNGEN ---
         self.search_limit = 5  # 🟢 CONFIG: Wie viele Suchergebnisse im Dropdown angezeigt werden (Max. 25)
+        self.max_playlist_items = 50  # harte Begrenzung für Playlist-Importe
 
         self.ytdl_options = {
             "format": "bestaudio/best",
@@ -71,7 +72,8 @@ class MusicCog(commands.Cog):
             "quiet": True,
             "default_search": "auto",
             "source_address": "0.0.0.0",
-            "js_runtimes": {"nodejs": {}},
+            # Verhindert JS-Runtime-Warnungen bei Umgebungen ohne node/deno.
+            "extractor_args": {"youtube": {"player_skip": ["js"]}},
         }
         self.ytdl = yt_dlp.YoutubeDL(self.ytdl_options)
 
@@ -222,12 +224,16 @@ class MusicCog(commands.Cog):
                 None, lambda: self.ytdl.extract_info(extract_query, download=False)
             )
 
-            if not data or "entries" not in data:
+            if not data:
                 return await interaction.followup.send("❌ Nichts gefunden.")
 
-            entries = [e for e in data["entries"] if e]
+            entries = [e for e in data.get("entries", []) if e]
+            if not entries and data.get("url"):
+                entries = [data]
 
             if is_url:
+                if len(entries) > self.max_playlist_items:
+                    entries = entries[: self.max_playlist_items]
                 await self.process_songs(interaction, entries, voice_client)
             else:
                 if not entries:
@@ -265,6 +271,11 @@ class MusicCog(commands.Cog):
             entries = [e for e in data.get("entries", []) if e]
             if not entries:
                 return await interaction.followup.send("❌ Keine Playlist-Einträge gefunden.")
+            if len(entries) > self.max_playlist_items:
+                entries = entries[: self.max_playlist_items]
+                await interaction.followup.send(
+                    f"ℹ️ Playlist wurde auf die ersten {self.max_playlist_items} Einträge begrenzt."
+                )
             await self.process_songs(interaction, entries, voice_client)
         except Exception as e:
             await interaction.followup.send(f"❌ Playlist konnte nicht geladen werden: {e}")
