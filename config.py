@@ -28,6 +28,10 @@ LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
 
 # --- VRCHAT ---
 VRCHAT_API_BASE_URL = os.getenv("VRCHAT_API_BASE_URL", "https://api.vrchat.cloud/api/1")
+VRCHAT_USER_AGENT = os.getenv(
+    "VRCHAT_USER_AGENT",
+    "DiscordPluginBot/1.0 (contact: discord.gg/yourserver | admin@example.com)",
+)
 VRCHAT_GROUP_MAIN_ID = os.getenv("VRCHAT_GROUP_MAIN_ID", "grp_998c5578-c65c-4d20-b1e5-70cf3a724f32")
 VRCHAT_GROUP_AFTERDARK_ID = os.getenv("VRCHAT_GROUP_AFTERDARK_ID", "grp_d9a755a3-92aa-40b8-81ee-e8f98aec2589")
 

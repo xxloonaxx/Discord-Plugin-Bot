@@ -9,7 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from config import VRCHAT_API_BASE_URL, VRCHAT_GROUP_AFTERDARK_ID, VRCHAT_GROUP_MAIN_ID
+from config import VRCHAT_API_BASE_URL, VRCHAT_GROUP_AFTERDARK_ID, VRCHAT_GROUP_MAIN_ID, VRCHAT_USER_AGENT
 
 
 class VRChatCog(commands.Cog):
@@ -21,6 +21,7 @@ class VRChatCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.api_base = VRCHAT_API_BASE_URL.rstrip("/")
+        self.user_agent = VRCHAT_USER_AGENT
         self.session: aiohttp.ClientSession | None = None
         self.auth_header: str | None = None
         self.logged_in_user: str | None = None
@@ -73,6 +74,7 @@ class VRChatCog(commands.Cog):
             raise RuntimeError("VRChat session nicht initialisiert.")
 
         headers = kwargs.pop("headers", {})
+        headers.setdefault("User-Agent", self.user_agent)
         if self.auth_header:
             headers["Authorization"] = self.auth_header
         url = f"{self.api_base}{endpoint}"
