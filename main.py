@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ from config import (
     GITHUB_UPDATE_BASE_RAW_URL,
     GITHUB_UPDATE_BRANCH,
     GITHUB_UPDATE_REPO,
+    LOG_CHANNEL_ID,
 )
 
 
@@ -25,6 +27,8 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger("core-bot")
+debug_enabled = False
+runtime_log_channel_id = LOG_CHANNEL_ID
 
 BASE_UPDATABLE_FILES: Final[dict[str, str]] = {
     "main.py": "main.py",
@@ -114,6 +118,23 @@ async def sync_remote_cog_index(branch_override: str | None = None) -> int:
     return added
 
 
+class DiscordLogHandler(logging.Handler):
+    def __init__(self, queue: asyncio.Queue[str], loop_provider) -> None:
+        super().__init__()
+        self.queue = queue
+        self.loop_provider = loop_provider
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = self.format(record)
+            loop = self.loop_provider()
+            if loop is None:
+                return
+            loop.call_soon_threadsafe(self.queue.put_nowait, message)
+        except Exception:
+            pass
+
+
 # --- KONFIGURATION ---
 if not DISCORD_TOKEN:
     raise RuntimeError(
@@ -132,6 +153,13 @@ intents.message_content = True
 class CoreBot(commands.Bot):
     def __init__(self) -> None:
         super().__init__(command_prefix="§", intents=intents, help_command=None)
+        self.log_queue: asyncio.Queue[str] = asyncio.Queue()
+        self.log_relay_task: asyncio.Task | None = None
+        self.discord_log_handler = DiscordLogHandler(self.log_queue, lambda: self.loop)
+        self.discord_log_handler.setFormatter(
+            logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+        )
+        logging.getLogger().addHandler(self.discord_log_handler)
 
     async def setup_hook(self) -> None:
         # --- AUTOMATISCHES LADEN ALLER COGS BEIM START ---
@@ -154,6 +182,23 @@ class CoreBot(commands.Bot):
         self.tree.copy_global_to(guild=guild)
         synced = await self.tree.sync(guild=guild)
         logger.info("%s Slash Commands für Guild %s synchronisiert.", len(synced), GUILD_ID_INT)
+        if self.log_relay_task is None:
+            self.log_relay_task = self.loop.create_task(self.log_relay_loop())
+
+    async def log_relay_loop(self) -> None:
+        await self.wait_until_ready()
+        while not self.is_closed():
+            message = await self.log_queue.get()
+            if not runtime_log_channel_id:
+                continue
+            channel = self.get_channel(runtime_log_channel_id)
+            if channel is None:
+                continue
+            try:
+                for chunk_start in range(0, len(message), 1800):
+                    await channel.send(f"```log\n{message[chunk_start:chunk_start + 1800]}\n```")
+            except Exception:
+                continue
 
 
 bot = CoreBot()
@@ -164,6 +209,17 @@ async def on_ready() -> None:
     if bot.user:
         logger.info("Bot ONLINE als: %s", bot.user)
     await bot.change_presence(activity=discord.Game(name="🟢 /help | System bereit"))
+
+
+@bot.listen("on_app_command_completion")
+async def on_app_command_completion(interaction: discord.Interaction, command) -> None:
+    if debug_enabled:
+        logger.info(
+            "DEBUG command complete | guild=%s user=%s command=%s",
+            interaction.guild_id,
+            interaction.user,
+            getattr(command, "name", "unknown"),
+        )
 
 
 # --- ADMIN VERWALTUNGS-BEFEHLE ---
@@ -395,6 +451,82 @@ async def set_status_cmd(
     await bot.change_presence(activity=activity)
     await interaction.response.send_message(
         f"✅ Status gesetzt: **{mode.value}** → `{text}`",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="debug_mode", description="Schaltet Debug-Logging an/aus (Terminal + Log-Channel).")
+@app_commands.default_permissions(administrator=True)
+@app_commands.choices(
+    state=[
+        app_commands.Choice(name="On", value="on"),
+        app_commands.Choice(name="Off", value="off"),
+    ]
+)
+async def debug_mode_cmd(interaction: discord.Interaction, state: app_commands.Choice[str]) -> None:
+    global debug_enabled
+    debug_enabled = state.value == "on"
+    logging.getLogger().setLevel(logging.DEBUG if debug_enabled else logging.INFO)
+    await interaction.response.send_message(
+        f"✅ Debug-Modus ist jetzt **{state.value.upper()}**.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="set_log_channel", description="Setzt den dauerhaften Log-Channel.")
+@app_commands.default_permissions(administrator=True)
+async def set_log_channel_cmd(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+) -> None:
+    global runtime_log_channel_id
+    runtime_log_channel_id = channel.id
+    await interaction.response.send_message(
+        f"✅ Log-Channel gesetzt auf {channel.mention}.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="terminal_debug", description="Wichtige Terminal-Debug-Befehle ausführen (Admin).")
+@app_commands.default_permissions(administrator=True)
+@app_commands.choices(
+    command=[
+        app_commands.Choice(name="uptime", value="uptime"),
+        app_commands.Choice(name="disk", value="disk"),
+        app_commands.Choice(name="memory", value="memory"),
+        app_commands.Choice(name="git_status", value="git_status"),
+        app_commands.Choice(name="restart", value="restart"),
+    ]
+)
+async def terminal_debug_cmd(interaction: discord.Interaction, command: app_commands.Choice[str]) -> None:
+    await interaction.response.defer(ephemeral=True)
+    if command.value == "restart":
+        await interaction.followup.send("♻️ Restart über Terminal-Debug ausgelöst.", ephemeral=True)
+        os.execv(sys.executable, [sys.executable, *sys.argv])
+        return
+
+    cmd_map = {
+        "uptime": "uptime",
+        "disk": "df -h",
+        "memory": "free -h",
+        "git_status": "git status --short",
+    }
+    shell_cmd = cmd_map[command.value]
+
+    try:
+        process = await asyncio.create_subprocess_shell(
+            shell_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        output = (stdout + stderr).decode("utf-8", errors="replace").strip() or "(keine Ausgabe)"
+    except Exception as exc:  # noqa: BLE001
+        await interaction.followup.send(f"❌ Fehler beim Ausführen: `{exc}`", ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        f"🖥️ `{shell_cmd}`\n```bash\n{output[:1800]}\n```",
         ephemeral=True,
     )
 
