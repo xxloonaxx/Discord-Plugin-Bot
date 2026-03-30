@@ -1,6 +1,9 @@
 import logging
+import os
 from pathlib import Path
+import sys
 from typing import Final
+from urllib.parse import quote
 
 import aiohttp
 import discord
@@ -23,13 +26,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger("core-bot")
 
-UPDATABLE_FILES: Final[dict[str, str]] = {
+BASE_UPDATABLE_FILES: Final[dict[str, str]] = {
     "main.py": "main.py",
     "config.py": "config.py",
     "vip.py": "cogs/vip.py",
     "music.py": "cogs/music.py",
     "fun.py": "cogs/fun.py",
 }
+UPDATE_FILE_INDEX: dict[str, str] = dict(BASE_UPDATABLE_FILES)
+
+
+def refresh_local_update_index() -> None:
+    UPDATE_FILE_INDEX.clear()
+    UPDATE_FILE_INDEX.update(BASE_UPDATABLE_FILES)
+    for cog_file in Path("cogs").glob("*.py"):
+        if cog_file.name.startswith("_"):
+            continue
+        UPDATE_FILE_INDEX[cog_file.name] = str(cog_file)
+
+
+refresh_local_update_index()
 
 
 def resolve_raw_base_url(branch_override: str | None = None) -> str:
@@ -50,6 +66,52 @@ def resolve_raw_base_url(branch_override: str | None = None) -> str:
         return ""
     branch = branch_override or GITHUB_UPDATE_BRANCH or "main"
     return f"https://raw.githubusercontent.com/{GITHUB_UPDATE_REPO.strip('/')}/{branch}"
+
+
+def resolve_repo_and_branch(branch_override: str | None = None) -> tuple[str, str]:
+    branch = branch_override or GITHUB_UPDATE_BRANCH or "main"
+    if GITHUB_UPDATE_REPO:
+        return GITHUB_UPDATE_REPO.strip("/"), branch
+
+    base = GITHUB_UPDATE_BASE_RAW_URL.rstrip("/")
+    if "github.com/" in base and "/tree/" in base:
+        parsed = base.split("github.com/", 1)[1]
+        repo_and_tree = parsed.split("/tree/", 1)
+        if len(repo_and_tree) == 2:
+            return repo_and_tree[0].strip("/"), branch
+    if "raw.githubusercontent.com/" in base:
+        parsed = base.split("raw.githubusercontent.com/", 1)[1].strip("/")
+        parts = parsed.split("/")
+        if len(parts) >= 3:
+            return f"{parts[0]}/{parts[1]}", branch
+    return "", branch
+
+
+async def sync_remote_cog_index(branch_override: str | None = None) -> int:
+    refresh_local_update_index()
+    repo, branch = resolve_repo_and_branch(branch_override)
+    if not repo:
+        return 0
+
+    api_url = f"https://api.github.com/repos/{repo}/git/trees/{quote(branch, safe='')}?recursive=1"
+    added = 0
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
+            async with session.get(api_url) as response:
+                if response.status != 200:
+                    return 0
+                payload = await response.json()
+    except Exception:
+        return 0
+
+    for item in payload.get("tree", []):
+        path = item.get("path", "")
+        if item.get("type") == "blob" and path.startswith("cogs/") and path.endswith(".py"):
+            file_name = Path(path).name
+            if file_name not in UPDATE_FILE_INDEX:
+                added += 1
+            UPDATE_FILE_INDEX[file_name] = path
+    return added
 
 
 # --- KONFIGURATION ---
@@ -197,17 +259,18 @@ async def ping(interaction: discord.Interaction) -> None:
     description="Lädt eine Datei von GitHub und aktualisiert sie lokal (Admin).",
 )
 @app_commands.default_permissions(administrator=True)
-@app_commands.choices(
-    file_name=[app_commands.Choice(name=name, value=name) for name in UPDATABLE_FILES.keys()]
+@app_commands.describe(
+    file_name="Datei aus Index, z. B. vip.py oder cogs/new_plugin.py",
+    branch="Optionaler Branch-Name, z. B. codex/ubergeben-von-dateien-fur-bot-anc0ft",
 )
-@app_commands.describe(branch="Optionaler Branch-Name, z. B. codex/ubergeben-von-dateien-fur-bot-anc0ft")
 async def update_file_cmd(
     interaction: discord.Interaction,
-    file_name: app_commands.Choice[str],
+    file_name: str,
     branch: str | None = None,
 ) -> None:
     await interaction.response.defer(ephemeral=True)
     branch_name = branch.strip() if branch else None
+    new_entries = await sync_remote_cog_index(branch_name)
     raw_base = resolve_raw_base_url(branch_override=branch_name)
     if not raw_base:
         await interaction.followup.send(
@@ -216,7 +279,12 @@ async def update_file_cmd(
         )
         return
 
-    target_rel_path = UPDATABLE_FILES[file_name.value]
+    requested = file_name.strip()
+    target_rel_path = UPDATE_FILE_INDEX.get(requested, requested)
+    if ".." in target_rel_path or target_rel_path.startswith("/"):
+        await interaction.followup.send("❌ Ungültiger Dateipfad.", ephemeral=True)
+        return
+
     raw_url = f"{raw_base.rstrip('/')}/{target_rel_path}"
 
     try:
@@ -264,10 +332,79 @@ async def update_file_cmd(
             f"✅ `{target_rel_path}` wurde von GitHub aktualisiert.\n"
             f"Quelle: `{raw_url}`\n"
             f"Branch: `{branch_name or GITHUB_UPDATE_BRANCH or 'main'}`\n"
+            f"Index-Update: `{new_entries}` neue Cog-Datei(en) erkannt.\n"
             "ℹ️ Bei `main.py`/`config.py` den Bot danach neu starten."
         ),
         ephemeral=True,
     )
+
+
+@bot.tree.command(name="list_update_files", description="Zeigt alle Dateien, die über /update_file gezogen werden können.")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(branch="Optionaler Branch für Remote-Cog-Scan")
+async def list_update_files_cmd(interaction: discord.Interaction, branch: str | None = None) -> None:
+    await interaction.response.defer(ephemeral=True)
+    branch_name = branch.strip() if branch else None
+    new_entries = await sync_remote_cog_index(branch_name)
+    lines = [f"• `{name}` -> `{path}`" for name, path in sorted(UPDATE_FILE_INDEX.items())]
+    await interaction.followup.send(
+        (
+            f"📦 **Update-Index** ({len(lines)} Dateien)\n"
+            f"Neu erkannt: `{new_entries}`\n\n" + "\n".join(lines[:60])
+        ),
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="set_status", description="Setzt den Bot-Status/Praesenz (Admin).")
+@app_commands.default_permissions(administrator=True)
+@app_commands.choices(
+    mode=[
+        app_commands.Choice(name="Playing", value="playing"),
+        app_commands.Choice(name="Watching", value="watching"),
+        app_commands.Choice(name="Listening", value="listening"),
+        app_commands.Choice(name="Competing", value="competing"),
+        app_commands.Choice(name="Clear", value="clear"),
+    ]
+)
+@app_commands.describe(mode="Art des Status", text="Status-Text")
+async def set_status_cmd(
+    interaction: discord.Interaction,
+    mode: app_commands.Choice[str],
+    text: str | None = None,
+) -> None:
+    if mode.value == "clear":
+        await bot.change_presence(activity=None)
+        await interaction.response.send_message("✅ Status entfernt.", ephemeral=True)
+        return
+
+    if not text:
+        await interaction.response.send_message("❌ Für diesen Modus ist ein Text nötig.", ephemeral=True)
+        return
+
+    activity: discord.BaseActivity
+    if mode.value == "playing":
+        activity = discord.Game(name=text)
+    elif mode.value == "watching":
+        activity = discord.Activity(type=discord.ActivityType.watching, name=text)
+    elif mode.value == "listening":
+        activity = discord.Activity(type=discord.ActivityType.listening, name=text)
+    else:
+        activity = discord.Activity(type=discord.ActivityType.competing, name=text)
+
+    await bot.change_presence(activity=activity)
+    await interaction.response.send_message(
+        f"✅ Status gesetzt: **{mode.value}** → `{text}`",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="restart_bot", description="Startet den Bot-Prozess neu (Admin).")
+@app_commands.default_permissions(administrator=True)
+async def restart_bot_cmd(interaction: discord.Interaction) -> None:
+    await interaction.response.send_message("♻️ Bot startet neu...", ephemeral=True)
+    logger.warning("Restart wurde via Slash-Command ausgelöst von %s", interaction.user)
+    os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
 def main() -> None:
