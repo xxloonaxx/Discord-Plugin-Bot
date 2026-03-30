@@ -1,4 +1,5 @@
 import json
+import re
 import time
 
 import aiohttp
@@ -58,10 +59,20 @@ def _default_vip_data() -> dict:
 def parse_vip_json(raw: str | None) -> tuple[dict, bool]:
     if not raw:
         return _default_vip_data(), True
+    candidate = raw.strip().lstrip("\ufeff")
+    if candidate.startswith("```"):
+        lines = candidate.splitlines()
+        if len(lines) >= 3 and lines[-1].strip().startswith("```"):
+            candidate = "\n".join(lines[1:-1]).strip()
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(candidate)
     except json.JSONDecodeError:
-        return _default_vip_data(), False
+        # tolerate common formatting issues from manual gist edits
+        candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            return _default_vip_data(), False
     if not isinstance(parsed, dict):
         return _default_vip_data(), False
 
