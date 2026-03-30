@@ -70,16 +70,37 @@ class MusicCog(commands.Cog):
             "noplaylist": False,
             "playlistend": 50,
             "quiet": True,
+            "no_warnings": True,
+            "ignoreerrors": True,
             "default_search": "auto",
             "source_address": "0.0.0.0",
             # Verhindert JS-Runtime-Warnungen bei Umgebungen ohne node/deno.
             "extractor_args": {"youtube": {"player_skip": ["js"]}},
         }
         self.ytdl = yt_dlp.YoutubeDL(self.ytdl_options)
+        self.ytdl_playlist = yt_dlp.YoutubeDL(
+            {
+                **self.ytdl_options,
+                "extract_flat": "in_playlist",
+                "noplaylist": False,
+                "playlistend": self.max_playlist_items,
+            }
+        )
 
         self.ffmpeg_options = {
             "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
             "options": "-vn",
+        }
+
+    def normalize_song_entry(self, entry: dict) -> dict | None:
+        song_url = entry.get("url") or entry.get("webpage_url")
+        if not song_url and entry.get("id"):
+            song_url = f"https://www.youtube.com/watch?v={entry['id']}"
+        if not song_url:
+            return None
+        return {
+            "url": song_url,
+            "title": entry.get("title", "Unbekanntes Lied"),
         }
 
     def play_next(self, guild, channel):
@@ -143,13 +164,23 @@ class MusicCog(commands.Cog):
 
         processed_songs = []
         for s in songs_to_add:
+            normalized = self.normalize_song_entry(s)
+            if not normalized:
+                continue
             processed_songs.append(
                 {
-                    "url": s["url"],
-                    "title": s.get("title", "Unbekanntes Lied"),
+                    "url": normalized["url"],
+                    "title": normalized["title"],
                     "requester": interaction.user.mention,
                 }
             )
+
+        if not processed_songs:
+            if is_dropdown:
+                return await interaction.edit_original_response(
+                    content="❌ Konnte kein abspielbares Lied finden.", embed=None, view=None
+                )
+            return await interaction.followup.send("❌ Konnte kein abspielbares Lied finden.")
 
         was_playing = voice_client.is_playing() or voice_client.is_paused()
 
@@ -228,7 +259,7 @@ class MusicCog(commands.Cog):
                 return await interaction.followup.send("❌ Nichts gefunden.")
 
             entries = [e for e in data.get("entries", []) if e]
-            if not entries and data.get("url"):
+            if not entries and (data.get("url") or data.get("webpage_url") or data.get("id")):
                 entries = [data]
 
             if is_url:
@@ -267,7 +298,9 @@ class MusicCog(commands.Cog):
 
         loop = asyncio.get_event_loop()
         try:
-            data = await loop.run_in_executor(None, lambda: self.ytdl.extract_info(url, download=False))
+            data = await loop.run_in_executor(
+                None, lambda: self.ytdl_playlist.extract_info(url, download=False)
+            )
             entries = [e for e in data.get("entries", []) if e]
             if not entries:
                 return await interaction.followup.send("❌ Keine Playlist-Einträge gefunden.")
