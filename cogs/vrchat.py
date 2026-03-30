@@ -25,6 +25,7 @@ class VRChatCog(commands.Cog):
         self.auth_header: str | None = None
         self.logged_in_user: str | None = None
         self.login_pending_2fa = False
+        self.pending_2fa_method = "app"
         self.temp_bans_file = Path("data/vrchat_temp_bans.json")
         self.temp_bans: dict[str, dict] = {}
         self.mod_notes_file = Path("data/vrchat_mod_notes.json")
@@ -117,10 +118,25 @@ class VRChatCog(commands.Cog):
         self._save_temp_bans()
 
     # -------------------- CORE / LOGIN (10 utility commands) --------------------
-    @app_commands.command(name="vrc_login", description="Login bei VRChat mit Username + Passwort.")
-    async def vrc_login(self, interaction: discord.Interaction, username: str, password: str):
+    @app_commands.command(name="vrc_login", description="Login bei VRChat mit Username + Passwort + 2FA Methode.")
+    @app_commands.choices(
+        two_factor_method=[
+            app_commands.Choice(name="App (TOTP)", value="app"),
+            app_commands.Choice(name="Email OTP", value="email"),
+        ]
+    )
+    @app_commands.describe(two_factor_code="Optional: Wenn vorhanden, wird 2FA direkt mit ausgeführt.")
+    async def vrc_login(
+        self,
+        interaction: discord.Interaction,
+        username: str,
+        password: str,
+        two_factor_method: app_commands.Choice[str],
+        two_factor_code: str | None = None,
+    ):
         await interaction.response.defer(ephemeral=True)
         self.auth_header = self._encode_basic_auth(username, password)
+        self.pending_2fa_method = two_factor_method.value
         status, data = await self._request("GET", "/auth/user")
         if status >= 400:
             self.auth_header = None
@@ -129,10 +145,28 @@ class VRChatCog(commands.Cog):
         two_fa = data.get("requiresTwoFactorAuth")
         if two_fa:
             self.login_pending_2fa = True
-            return await interaction.followup.send(
-                "🔐 Login ok, aber 2FA nötig. Nutze jetzt `/vrc_2fa app_code:<code>`.",
-                ephemeral=True,
+            if not two_factor_code:
+                return await interaction.followup.send(
+                    (
+                        "🔐 Login ok, aber 2FA nötig.\n"
+                        f"Ausgewählte Methode: **{two_factor_method.name}**.\n"
+                        "Nutze nun `/vrc_2fa app_code:<code>` oder gib den Code direkt beim nächsten Login mit."
+                    ),
+                    ephemeral=True,
+                )
+
+            endpoint = (
+                "/auth/twofactorauth/totp/verify"
+                if two_factor_method.value == "app"
+                else "/auth/twofactorauth/emailotp/verify"
             )
+            two_status, two_data = await self._request("POST", endpoint, json={"code": two_factor_code})
+            if two_status >= 400:
+                return await interaction.followup.send(
+                    f"❌ 2FA fehlgeschlagen: `{two_status}` {two_data}",
+                    ephemeral=True,
+                )
+            self.login_pending_2fa = False
 
         self.logged_in_user = data.get("displayName", username)
         self.login_pending_2fa = False
@@ -144,7 +178,12 @@ class VRChatCog(commands.Cog):
         if not self.auth_header or not self.login_pending_2fa:
             return await interaction.followup.send("❌ Kein 2FA-Login ausstehend.", ephemeral=True)
 
-        status, data = await self._request("POST", "/auth/twofactorauth/totp/verify", json={"code": app_code})
+        endpoint = (
+            "/auth/twofactorauth/totp/verify"
+            if self.pending_2fa_method == "app"
+            else "/auth/twofactorauth/emailotp/verify"
+        )
+        status, data = await self._request("POST", endpoint, json={"code": app_code})
         if status >= 400:
             return await interaction.followup.send(f"❌ 2FA fehlgeschlagen: `{status}` {data}", ephemeral=True)
 
