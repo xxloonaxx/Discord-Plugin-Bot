@@ -103,6 +103,34 @@ class MusicCog(commands.Cog):
             "title": entry.get("title", "Unbekanntes Lied"),
         }
 
+    async def extract_stream_url(self, url: str) -> str | None:
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(None, lambda: self.ytdl.extract_info(url, download=False))
+        if not data:
+            return None
+        if "entries" in data and data["entries"]:
+            data = next((entry for entry in data["entries"] if entry), None) or {}
+        return data.get("url")
+
+    async def start_song(self, guild: discord.Guild, channel: discord.abc.Messageable, song: dict, announce: bool):
+        voice_client = guild.voice_client
+        if not voice_client:
+            return
+
+        stream_url = await self.extract_stream_url(song["url"])
+        if not stream_url:
+            self.current_song[guild.id] = None
+            asyncio.get_running_loop().call_soon(self.play_next, guild, channel)
+            return
+
+        player = discord.FFmpegPCMAudio(stream_url, **self.ffmpeg_options)
+        voice_client.play(player, after=lambda e: self.play_next(guild, channel))
+        if announce:
+            embed = discord.Embed(
+                description=f"🎶 **Spielt jetzt:** `{song['title']}`", color=discord.Color.green()
+            )
+            await channel.send(embed=embed)
+
     def play_next(self, guild, channel):
         guild_id = guild.id
         current = self.current_song.get(guild_id)
@@ -119,29 +147,19 @@ class MusicCog(commands.Cog):
         if current and self.repeat_mode[guild_id] == "song":
             next_song = current
             self.current_song[guild_id] = next_song
-            voice_client = guild.voice_client
-            if voice_client:
-                player = discord.FFmpegPCMAudio(next_song["url"], **self.ffmpeg_options)
-                voice_client.play(player, after=lambda e: self.play_next(guild, channel))
-                embed = discord.Embed(
-                    description=f"🔁 **Wiederholt:** `{next_song['title']}`", color=discord.Color.blurple()
-                )
-                asyncio.run_coroutine_threadsafe(channel.send(embed=embed), self.bot.loop)
+            asyncio.run_coroutine_threadsafe(
+                self.start_song(guild, channel, next_song, announce=False),
+                self.bot.loop,
+            )
             return
 
         if guild_id in self.queues and len(self.queues[guild_id]) > 0:
             next_song = self.queues[guild_id].pop(0)
             self.current_song[guild_id] = next_song
-
-            voice_client = guild.voice_client
-            if voice_client:
-                player = discord.FFmpegPCMAudio(next_song["url"], **self.ffmpeg_options)
-                voice_client.play(player, after=lambda e: self.play_next(guild, channel))
-
-                embed = discord.Embed(
-                    description=f"🎶 **Spielt jetzt:** `{next_song['title']}`", color=discord.Color.green()
-                )
-                asyncio.run_coroutine_threadsafe(channel.send(embed=embed), self.bot.loop)
+            asyncio.run_coroutine_threadsafe(
+                self.start_song(guild, channel, next_song, announce=True),
+                self.bot.loop,
+            )
         else:
             self.current_song[guild_id] = None
 
@@ -188,8 +206,7 @@ class MusicCog(commands.Cog):
         if not was_playing and processed_songs:
             first_song = processed_songs.pop(0)
             self.current_song[guild_id] = first_song
-            player = discord.FFmpegPCMAudio(first_song["url"], **self.ffmpeg_options)
-            voice_client.play(player, after=lambda e: self.play_next(interaction.guild, interaction.channel))
+            await self.start_song(interaction.guild, interaction.channel, first_song, announce=False)
 
             embed = discord.Embed(
                 description=f"🎶 **Spielt jetzt:** `{first_song['title']}`", color=discord.Color.green()
