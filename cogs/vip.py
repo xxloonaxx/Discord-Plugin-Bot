@@ -21,6 +21,7 @@ from config import (
 )
 
 GUILD_ID = DISCORD_GUILD_ID
+VIP_CATEGORIES = ["staffplus", "staff", "vipplus", "vip"]
 
 
 # --- GITHUB HELPER ---
@@ -46,6 +47,28 @@ async def update_gist(gist_id, filename, content):
     payload = {"files": {filename: {"content": content}}}
     async with aiohttp.ClientSession(headers=headers) as s:
         await s.patch(url, json=payload)
+
+
+def _default_vip_data() -> dict:
+    return {category: [] for category in VIP_CATEGORIES}
+
+
+def parse_vip_json(raw: str | None) -> tuple[dict, bool]:
+    if not raw:
+        return _default_vip_data(), True
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return _default_vip_data(), False
+    if not isinstance(parsed, dict):
+        return _default_vip_data(), False
+
+    data = _default_vip_data()
+    for category in VIP_CATEGORIES:
+        values = parsed.get(category, [])
+        if isinstance(values, list):
+            data[category] = [str(v).strip() for v in values if str(v).strip()]
+    return data, True
 
 
 # --- REFRESH BAN PANEL ---
@@ -111,17 +134,19 @@ async def process_verification(interaction: discord.Interaction, vrc_name: str):
             ephemeral=True,
         )
 
-    json_raw = await get_gist(GIST_VIP_ID, "viplist") or ""
-    try:
-        data = json.loads(json_raw)
-    except Exception:
+    json_raw = await get_gist(GIST_VIP_ID, "viplist")
+    data, valid_vip_json = parse_vip_json(json_raw)
+    if not valid_vip_json:
         return await interaction.followup.send(
-            embed=discord.Embed(description="❌ DB Error.", color=discord.Color.red()),
+            embed=discord.Embed(
+                description="❌ VIP-Datenbank ist beschädigt (ungültiges JSON).",
+                color=discord.Color.red(),
+            ),
             ephemeral=True,
         )
 
     found_cat, exact_vrc_name = None, vrc_name
-    for cat in ["staffplus", "staff", "vipplus", "vip"]:
+    for cat in VIP_CATEGORIES:
         for db_name in data.get(cat, []):
             if db_name.lower() == vrc_name.lower():
                 found_cat, exact_vrc_name = cat, db_name
@@ -456,7 +481,7 @@ class VIPCog(commands.Cog):
             (GIST_BLACKLIST_ID, "blacklistet", ""),
             (GIST_LOG_ID, "ban_tracker", ""),
             (GIST_LOG_ID, "log", "--- LOG: VERIFIED VIPs ---"),
-            (GIST_VIP_ID, "viplist", json.dumps({"staffplus": [], "staff": [], "vipplus": [], "vip": []})),
+            (GIST_VIP_ID, "viplist", json.dumps(_default_vip_data())),
         ]:
             if await get_gist(gid, f) is None:
                 await update_gist(gid, f, d)
@@ -487,13 +512,12 @@ class VIPCog(commands.Cog):
             return
 
         log_raw = await get_gist(GIST_LOG_ID, "log") or ""
-        json_raw = await get_gist(GIST_VIP_ID, "viplist") or ""
-        if not log_raw or not json_raw:
+        json_raw = await get_gist(GIST_VIP_ID, "viplist")
+        if not log_raw:
             return
 
-        try:
-            data = json.loads(json_raw)
-        except Exception:
+        data, valid_vip_json = parse_vip_json(json_raw)
+        if not valid_vip_json:
             return
 
         json_changed = False
@@ -557,6 +581,11 @@ class VIPCog(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def setup_panel(self, interaction: discord.Interaction):
         channel = self.bot.get_channel(PANEL_CHANNEL_ID)
+        if channel is None:
+            return await interaction.response.send_message(
+                "❌ Panel-Channel nicht gefunden. Prüfe `PANEL_CHANNEL_ID`.",
+                ephemeral=True,
+            )
         embed = discord.Embed(
             title="🎮 VIP Verification",
             description="Click the **Verify Now** button below.",
@@ -576,13 +605,12 @@ class VIPCog(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def adminverify(self, interaction: discord.Interaction, member: discord.Member, vrc_name: str):
         await interaction.response.defer(ephemeral=True)
-        json_raw = await get_gist(GIST_VIP_ID, "viplist") or "{}"
-        try:
-            data = json.loads(json_raw)
-        except Exception:
-            data = {}
+        json_raw = await get_gist(GIST_VIP_ID, "viplist")
+        data, valid_vip_json = parse_vip_json(json_raw)
+        if not valid_vip_json:
+            return await interaction.followup.send("❌ VIP-JSON ist ungültig. Bitte zuerst reparieren.", ephemeral=True)
         found = False
-        for cat in ["staffplus", "staff", "vipplus", "vip"]:
+        for cat in VIP_CATEGORIES:
             for n in data.get(cat, []):
                 if n.lower() == vrc_name.lower():
                     found = True
@@ -612,27 +640,38 @@ class VIPCog(commands.Cog):
     )
     async def add_vip(self, interaction: discord.Interaction, category: app_commands.Choice[str], vrc_name: str):
         await interaction.response.defer(ephemeral=True)
-        raw = await get_gist(GIST_VIP_ID, "viplist") or "{}"
-        data = json.loads(raw)
+        vrc_name = vrc_name.strip()
+        if not vrc_name:
+            return await interaction.followup.send("❌ Name darf nicht leer sein.", ephemeral=True)
+        raw = await get_gist(GIST_VIP_ID, "viplist")
+        data, valid_vip_json = parse_vip_json(raw)
+        if not valid_vip_json:
+            return await interaction.followup.send(
+                "❌ VIP-JSON ist ungültig. Bitte erst das Gist-Format korrigieren.", ephemeral=True
+            )
         cv = category.value
         if cv not in data:
             data[cv] = []
         if any(name.lower() == vrc_name.lower() for name in data[cv]):
             return await interaction.followup.send(f"ℹ️ `{vrc_name}` ist bereits in `{cv}`.", ephemeral=True)
         data[cv].append(vrc_name)
-        await update_gist(GIST_VIP_ID, "viplist", json.dumps(data))
+        await update_gist(GIST_VIP_ID, "viplist", json.dumps(data, indent=4))
         await interaction.followup.send(f"✅ Added `{vrc_name}`.", ephemeral=True)
 
     @app_commands.command(name="remove_vip", description="Remove name from JSON.")
     @app_commands.default_permissions(administrator=True)
     async def remove_vip(self, interaction: discord.Interaction, vrc_name: str):
         await interaction.response.defer(ephemeral=True)
-        data = json.loads(await get_gist(GIST_VIP_ID, "viplist") or "{}")
+        data, valid_vip_json = parse_vip_json(await get_gist(GIST_VIP_ID, "viplist"))
+        if not valid_vip_json:
+            return await interaction.followup.send(
+                "❌ VIP-JSON ist ungültig. Entfernen aktuell blockiert.", ephemeral=True
+            )
         for cat in data:
             for n in data[cat]:
                 if n.lower() == vrc_name.lower():
                     data[cat].remove(n)
-                    await update_gist(GIST_VIP_ID, "viplist", json.dumps(data))
+                    await update_gist(GIST_VIP_ID, "viplist", json.dumps(data, indent=4))
                     return await interaction.followup.send(f"✅ Removed `{n}`.", ephemeral=True)
         await interaction.followup.send("❌ Not found.", ephemeral=True)
 
@@ -640,9 +679,13 @@ class VIPCog(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def list_vips(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        data = json.loads(await get_gist(GIST_VIP_ID, "viplist") or "{}")
+        data, valid_vip_json = parse_vip_json(await get_gist(GIST_VIP_ID, "viplist"))
+        if not valid_vip_json:
+            return await interaction.followup.send(
+                "❌ VIP-JSON ist ungültig und kann nicht angezeigt werden.", ephemeral=True
+            )
         embed = discord.Embed(title="📋 VIPs", color=discord.Color.blue())
-        for c in ["staffplus", "staff", "vipplus", "vip"]:
+        for c in VIP_CATEGORIES:
             embed.add_field(name=c.upper(), value="\n".join(data.get(c, [])[:20]) or "None", inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
