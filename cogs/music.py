@@ -1,4 +1,5 @@
 import asyncio
+import random
 
 import discord
 import yt_dlp
@@ -280,6 +281,7 @@ class MusicCog(commands.Cog):
 
         guild_id = interaction.guild.id
         is_admin = interaction.user.guild_permissions.administrator
+        self.skip_votes.setdefault(guild_id, set())
 
         if is_admin:
             await interaction.response.send_message(
@@ -349,7 +351,6 @@ class MusicCog(commands.Cog):
         queue = self.queues.get(guild_id, [])
         if len(queue) < 2:
             return await interaction.response.send_message("❌ Zu wenig Songs zum Mischen.", ephemeral=True)
-        import random
 
         random.shuffle(queue)
         await interaction.response.send_message(f"🔀 Queue gemischt ({len(queue)} Songs).")
@@ -402,13 +403,14 @@ class MusicCog(commands.Cog):
     @app_commands.command(name="queue", description="Zeigt die aktuelle Warteschlange an.")
     async def queue_cmd(self, interaction: discord.Interaction):
         guild_id = interaction.guild.id
+        current = self.current_song.get(guild_id)
 
         if guild_id not in self.queues or len(self.queues[guild_id]) == 0:
-            if guild_id in self.current_song and self.current_song[guild_id]:
+            if current:
                 return await interaction.response.send_message(
                     embed=discord.Embed(
                         description=(
-                            f"🎶 **Aktuell läuft:** `{self.current_song[guild_id]['title']}`\n\n"
+                            f"🎶 **Aktuell läuft:** `{current['title']}`\n\n"
                             "*Die Warteschlange ist danach leer.*"
                         ),
                         color=discord.Color.blue(),
@@ -429,7 +431,7 @@ class MusicCog(commands.Cog):
         embed = discord.Embed(
             title="📜 Musik Warteschlange",
             description=(
-                f"🎶 **Aktuell:** `{self.current_song[guild_id]['title']}`\n\n"
+                f"🎶 **Aktuell:** `{current['title'] if current else 'Nichts'}`\n\n"
                 f"**Als Nächstes:**\n{queue_list}"
             ),
             color=discord.Color.blue(),

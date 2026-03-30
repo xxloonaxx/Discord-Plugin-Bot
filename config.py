@@ -1,5 +1,13 @@
 import os
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except Exception:
+    # Optional: Bot funktioniert auch ohne python-dotenv, wenn ENV extern gesetzt ist.
+    pass
+
 # --- CORE BOT ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 DISCORD_GUILD_ID = int(os.getenv("DISCORD_GUILD_ID", "1333922279498711060"))

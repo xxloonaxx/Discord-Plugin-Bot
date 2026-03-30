@@ -25,6 +25,8 @@ GUILD_ID = DISCORD_GUILD_ID
 
 # --- GITHUB HELPER ---
 async def get_gist(gist_id, filename):
+    if not GITHUB_TOKEN:
+        return None
     url = f"https://api.github.com/gists/{gist_id}?t={int(time.time())}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}", "Cache-Control": "no-cache"}
     async with aiohttp.ClientSession(headers=headers) as s:
@@ -37,6 +39,8 @@ async def get_gist(gist_id, filename):
 
 
 async def update_gist(gist_id, filename, content):
+    if not GITHUB_TOKEN:
+        return
     url = f"https://api.github.com/gists/{gist_id}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     payload = {"files": {filename: {"content": content}}}
@@ -613,6 +617,8 @@ class VIPCog(commands.Cog):
         cv = category.value
         if cv not in data:
             data[cv] = []
+        if any(name.lower() == vrc_name.lower() for name in data[cv]):
+            return await interaction.followup.send(f"ℹ️ `{vrc_name}` ist bereits in `{cv}`.", ephemeral=True)
         data[cv].append(vrc_name)
         await update_gist(GIST_VIP_ID, "viplist", json.dumps(data))
         await interaction.followup.send(f"✅ Added `{vrc_name}`.", ephemeral=True)
