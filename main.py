@@ -7,7 +7,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from config import DISCORD_GUILD_ID, DISCORD_TOKEN, GITHUB_UPDATE_BASE_RAW_URL
+from config import (
+    DISCORD_GUILD_ID,
+    DISCORD_TOKEN,
+    GITHUB_UPDATE_BASE_RAW_URL,
+    GITHUB_UPDATE_BRANCH,
+    GITHUB_UPDATE_REPO,
+)
 
 
 # --- LOGGING ---
@@ -24,6 +30,26 @@ UPDATABLE_FILES: Final[dict[str, str]] = {
     "music.py": "cogs/music.py",
     "fun.py": "cogs/fun.py",
 }
+
+
+def resolve_raw_base_url(branch_override: str | None = None) -> str:
+    if GITHUB_UPDATE_BASE_RAW_URL:
+        base = GITHUB_UPDATE_BASE_RAW_URL.rstrip("/")
+        if "github.com" in base and "/tree/" in base:
+            # allow normal GitHub branch links:
+            # https://github.com/user/repo/tree/branch
+            parsed = base.split("github.com/", 1)[1]
+            repo_and_tree = parsed.split("/tree/", 1)
+            if len(repo_and_tree) == 2:
+                repo = repo_and_tree[0].strip("/")
+                branch = branch_override or repo_and_tree[1].strip("/")
+                return f"https://raw.githubusercontent.com/{repo}/{branch}"
+        return base
+
+    if not GITHUB_UPDATE_REPO:
+        return ""
+    branch = branch_override or GITHUB_UPDATE_BRANCH or "main"
+    return f"https://raw.githubusercontent.com/{GITHUB_UPDATE_REPO.strip('/')}/{branch}"
 
 
 # --- KONFIGURATION ---
@@ -174,18 +200,24 @@ async def ping(interaction: discord.Interaction) -> None:
 @app_commands.choices(
     file_name=[app_commands.Choice(name=name, value=name) for name in UPDATABLE_FILES.keys()]
 )
-async def update_file_cmd(interaction: discord.Interaction, file_name: app_commands.Choice[str]) -> None:
+@app_commands.describe(branch="Optionaler Branch-Name, z. B. codex/ubergeben-von-dateien-fur-bot-anc0ft")
+async def update_file_cmd(
+    interaction: discord.Interaction,
+    file_name: app_commands.Choice[str],
+    branch: str | None = None,
+) -> None:
     await interaction.response.defer(ephemeral=True)
-
-    if not GITHUB_UPDATE_BASE_RAW_URL:
+    branch_name = branch.strip() if branch else None
+    raw_base = resolve_raw_base_url(branch_override=branch_name)
+    if not raw_base:
         await interaction.followup.send(
-            "❌ `GITHUB_UPDATE_BASE_RAW_URL` fehlt in deiner .env.",
+            "❌ Setze `GITHUB_UPDATE_BASE_RAW_URL` oder `GITHUB_UPDATE_REPO` in der .env.",
             ephemeral=True,
         )
         return
 
     target_rel_path = UPDATABLE_FILES[file_name.value]
-    raw_url = f"{GITHUB_UPDATE_BASE_RAW_URL.rstrip('/')}/{target_rel_path}"
+    raw_url = f"{raw_base.rstrip('/')}/{target_rel_path}"
 
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
@@ -231,6 +263,7 @@ async def update_file_cmd(interaction: discord.Interaction, file_name: app_comma
         (
             f"✅ `{target_rel_path}` wurde von GitHub aktualisiert.\n"
             f"Quelle: `{raw_url}`\n"
+            f"Branch: `{branch_name or GITHUB_UPDATE_BRANCH or 'main'}`\n"
             "ℹ️ Bei `main.py`/`config.py` den Bot danach neu starten."
         ),
         ephemeral=True,
