@@ -1,11 +1,13 @@
 import logging
 from pathlib import Path
+from typing import Final
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from config import DISCORD_GUILD_ID, DISCORD_TOKEN
+from config import DISCORD_GUILD_ID, DISCORD_TOKEN, GITHUB_UPDATE_BASE_RAW_URL
 
 
 # --- LOGGING ---
@@ -14,6 +16,14 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger("core-bot")
+
+UPDATABLE_FILES: Final[dict[str, str]] = {
+    "main.py": "main.py",
+    "config.py": "config.py",
+    "vip.py": "cogs/vip.py",
+    "music.py": "cogs/music.py",
+    "fun.py": "cogs/fun.py",
+}
 
 
 # --- KONFIGURATION ---
@@ -154,6 +164,77 @@ async def list_cogs_cmd(interaction: discord.Interaction) -> None:
 @bot.tree.command(name="ping", description="Prüfe die Bot-Latenz.")
 async def ping(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(f"🏓 Pong! `{round(bot.latency * 1000)}ms`", ephemeral=True)
+
+
+@bot.tree.command(
+    name="update_file",
+    description="Lädt eine Datei von GitHub und aktualisiert sie lokal (Admin).",
+)
+@app_commands.default_permissions(administrator=True)
+@app_commands.choices(
+    file_name=[app_commands.Choice(name=name, value=name) for name in UPDATABLE_FILES.keys()]
+)
+async def update_file_cmd(interaction: discord.Interaction, file_name: app_commands.Choice[str]) -> None:
+    await interaction.response.defer(ephemeral=True)
+
+    if not GITHUB_UPDATE_BASE_RAW_URL:
+        await interaction.followup.send(
+            "❌ `GITHUB_UPDATE_BASE_RAW_URL` fehlt in deiner .env.",
+            ephemeral=True,
+        )
+        return
+
+    target_rel_path = UPDATABLE_FILES[file_name.value]
+    raw_url = f"{GITHUB_UPDATE_BASE_RAW_URL.rstrip('/')}/{target_rel_path}"
+
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
+            async with session.get(raw_url) as response:
+                if response.status != 200:
+                    await interaction.followup.send(
+                        f"❌ Download fehlgeschlagen ({response.status}) für:\n`{raw_url}`",
+                        ephemeral=True,
+                    )
+                    return
+                content = await response.text()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Fehler beim Datei-Update von %s: %s", raw_url, exc)
+        await interaction.followup.send(f"❌ Fehler beim Download: `{exc}`", ephemeral=True)
+        return
+
+    if not content.strip():
+        await interaction.followup.send("❌ Dateiinhalt ist leer, Update abgebrochen.", ephemeral=True)
+        return
+
+    target_path = Path(target_rel_path)
+    target_path.write_text(content, encoding="utf-8")
+
+    if target_path.parts[0] == "cogs" and target_path.suffix == ".py":
+        extension_name = f"cogs.{target_path.stem}"
+        try:
+            if extension_name in bot.extensions:
+                await bot.reload_extension(extension_name)
+            else:
+                await bot.load_extension(extension_name)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Datei aktualisiert, aber Cog-Reload fehlgeschlagen: %s", exc)
+            await interaction.followup.send(
+                (
+                    f"⚠️ Datei `{target_rel_path}` wurde aktualisiert, "
+                    f"aber Reload fehlgeschlagen:\n```{exc}```"
+                ),
+                ephemeral=True,
+            )
+            return
+
+    await interaction.followup.send(
+        (
+            f"✅ `{target_rel_path}` wurde von GitHub aktualisiert.\n"
+            f"Quelle: `{raw_url}`\n"
+            "ℹ️ Bei `main.py`/`config.py` den Bot danach neu starten."
+        ),
+        ephemeral=True,
+    )
 
 
 def main() -> None:
