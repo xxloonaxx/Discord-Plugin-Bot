@@ -304,12 +304,13 @@ class VRChatCog(commands.Cog):
         if not self.session:
             return False
         for cookie in self.session.cookie_jar:
-            if cookie.key.lower() == "auth":
+            key = cookie.key.lower()
+            if key == "auth" or "auth" in key or "session" in key:
                 return True
         return False
 
     def _is_authenticated(self) -> bool:
-        return self._has_session_auth_cookie() or self.login_pending_2fa
+        return self._has_session_auth_cookie() or self.login_pending_2fa or bool(self.logged_in_user)
 
     async def _ensure_authenticated(self, interaction: discord.Interaction) -> bool:
         if self._is_authenticated():
@@ -393,14 +394,20 @@ class VRChatCog(commands.Cog):
         return [x for x in data if isinstance(x, dict)]
 
     async def _fetch_group_join_requests(self, group_id: str, limit: int = 10) -> list[dict[str, Any]]:
-        status, data = await self._request(
-            "GET",
+        endpoints = [
             f"/groups/{group_id}/requests",
-            params={"n": max(1, min(limit, 25))},
-        )
-        if status >= 400 or not isinstance(data, list):
-            return []
-        return [x for x in data if isinstance(x, dict)]
+            f"/groups/{group_id}/joinRequests",
+            f"/groups/{group_id}/requests/pending",
+        ]
+        for endpoint in endpoints:
+            status, data = await self._request(
+                "GET",
+                endpoint,
+                params={"n": max(1, min(limit, 25))},
+            )
+            if status < 400 and isinstance(data, list):
+                return [x for x in data if isinstance(x, dict)]
+        return []
 
     async def _respond_group_join_request(
         self,
@@ -414,12 +421,17 @@ class VRChatCog(commands.Cog):
         if block:
             payload["block"] = True
 
-        status, data = await self._request(
-            "PUT",
+        endpoints = [
             f"/groups/{group_id}/requests/{user_id}",
-            json=payload,
-        )
-        return (200 <= status < 300), data
+            f"/groups/{group_id}/joinRequests/{user_id}",
+        ]
+        last_data: Any = {}
+        for endpoint in endpoints:
+            status, data = await self._request("PUT", endpoint, json=payload)
+            last_data = data
+            if 200 <= status < 300:
+                return True, data
+        return False, last_data
 
     async def _ban_group_user(self, group_id: str, user_id: str, reason: str = "Blocked via Discord invite moderation") -> tuple[bool, Any]:
         payload = {"userId": user_id, "reason": reason}
@@ -764,6 +776,31 @@ class VRChatCog(commands.Cog):
             self.session.cookie_jar.clear()
 
         await interaction.followup.send("✅ VRChat Session zurückgesetzt.", ephemeral=True)
+
+    @app_commands.command(name="vrc_watcher_status", description="Zeigt Status der VRChat Watcher (Logs/Invites).")
+    @app_commands.default_permissions(administrator=True)
+    async def vrc_watcher_status(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        auth_state = "Ja" if self._is_authenticated() else "Nein"
+        msg = (
+            f"Auth: **{auth_state}**\n"
+            f"Audit Worker: **{'running' if self.group_audit_log_worker.is_running() else 'stopped'}**\n"
+            f"Invite Worker: **{'running' if self.group_join_request_worker.is_running() else 'stopped'}**\n"
+            f"Temp-Unban Worker: **{'running' if self.temp_unban_worker.is_running() else 'stopped'}**\n"
+            f"Known audit IDs: `{self.last_group_audit_ids}`\n"
+            f"Known request IDs: `{self.last_group_request_ids}`\n"
+        )
+        await interaction.followup.send(msg, ephemeral=True)
+
+    @app_commands.command(name="vrc_force_poll", description="Erzwingt sofortige Log/Invite-Abfrage.")
+    @app_commands.default_permissions(administrator=True)
+    async def vrc_force_poll(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if not await self._ensure_authenticated(interaction):
+            return
+        await self.group_audit_log_worker()
+        await self.group_join_request_worker()
+        await interaction.followup.send("✅ Polling manuell ausgeführt.", ephemeral=True)
 
     @app_commands.command(name="vrc_me", description="Zeigt Informationen über den eingeloggten VRChat User.")
     async def vrc_me(self, interaction: discord.Interaction) -> None:
