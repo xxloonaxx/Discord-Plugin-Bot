@@ -144,7 +144,7 @@ class VRChatCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.api_base = VRCHAT_API_BASE_URL.rstrip("/")
-        self.user_agent = VRCHAT_USER_AGENT
+        self.user_agent = self._normalize_user_agent(VRCHAT_USER_AGENT)
         self.group_id = VRCHAT_GROUP_ID
 
         self.session: aiohttp.ClientSession | None = None
@@ -174,7 +174,13 @@ class VRChatCog(commands.Cog):
         self.invite_ready_announced = False
 
     async def cog_load(self) -> None:
-        self.session = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar())
+        self.session = aiohttp.ClientSession(
+            cookie_jar=aiohttp.CookieJar(),
+            headers={
+                "User-Agent": self.user_agent,
+                "Accept": "application/json",
+            },
+        )
         self._load_temp_bans()
         self._load_mod_notes()
 
@@ -207,6 +213,18 @@ class VRChatCog(commands.Cog):
             await interaction.followup.send(f"❌ Fehler: {error}", ephemeral=True)
         else:
             await interaction.response.send_message(f"❌ Fehler: {error}", ephemeral=True)
+
+    def _normalize_user_agent(self, user_agent: str) -> str:
+        """
+        VRChat WAF expects app/version and contact info.
+        Fallback to a guaranteed-valid format if custom value is incomplete.
+        """
+        candidate = (user_agent or "").strip()
+        has_app_version = "/" in candidate and any(ch.isdigit() for ch in candidate.split("/", 1)[-1])
+        has_contact = ("@" in candidate) or ("http://" in candidate) or ("https://" in candidate)
+        if has_app_version and has_contact:
+            return candidate
+        return "DiscordPluginBot/1.0 (+https://github.com/xxloonaxx/Discord-Plugin-Bot; contact:admin@example.com)"
 
     def _has_mod_permission(self, user: discord.abc.User | discord.Member) -> bool:
         if not isinstance(user, discord.Member):
