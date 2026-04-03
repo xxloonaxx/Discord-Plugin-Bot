@@ -7,21 +7,6 @@ try:
 except Exception:
     # Optional: Bot funktioniert auch ohne python-dotenv, wenn ENV extern gesetzt ist.
     pass
-
-
-def _parse_int_list(raw: str) -> list[int]:
-    values: list[int] = []
-    for part in raw.split(","):
-        token = part.strip()
-        if not token:
-            continue
-        try:
-            values.append(int(token))
-        except ValueError:
-            continue
-    return values
-
-
 # --- CORE BOT ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 DISCORD_GUILD_ID = int(os.getenv("DISCORD_GUILD_ID", "1333922279498711060"))
@@ -49,7 +34,15 @@ VRCHAT_USER_AGENT = os.getenv(
 VRCHAT_GROUP_ID = os.getenv("VRCHAT_GROUP_ID", "grp_998c5578-c65c-4d20-b1e5-70cf3a724f32")
 VRCHAT_AUDIT_LOG_CHANNEL_ID = int(os.getenv("VRCHAT_AUDIT_LOG_CHANNEL_ID", "0"))
 VRCHAT_INVITE_CHANNEL_ID = int(os.getenv("VRCHAT_INVITE_CHANNEL_ID", "0"))
-VRCHAT_STAFF_ROLE_IDS = _parse_int_list(os.getenv("VRCHAT_STAFF_ROLE_IDS", ""))
+VRCHAT_STAFF_ROLE_IDS: list[int] = []
+for _role_token in os.getenv("VRCHAT_STAFF_ROLE_IDS", "1484342349633945711").split(","):
+    _role_token = _role_token.strip()
+    if not _role_token:
+        continue
+    try:
+        VRCHAT_STAFF_ROLE_IDS.append(int(_role_token))
+    except ValueError:
+        continue
 
 # --- ROLES ---
 ROLE_18_PLUS = 1333922279532396567
