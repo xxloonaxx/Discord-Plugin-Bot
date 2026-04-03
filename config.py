@@ -8,6 +8,20 @@ except Exception:
     # Optional: Bot funktioniert auch ohne python-dotenv, wenn ENV extern gesetzt ist.
     pass
 
+
+def _parse_int_list(raw: str) -> list[int]:
+    values: list[int] = []
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            values.append(int(token))
+        except ValueError:
+            continue
+    return values
+
+
 # --- CORE BOT ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 DISCORD_GUILD_ID = int(os.getenv("DISCORD_GUILD_ID", "1333922279498711060"))
@@ -32,8 +46,10 @@ VRCHAT_USER_AGENT = os.getenv(
     "VRCHAT_USER_AGENT",
     "DiscordPluginBot/1.0 (contact: discord.gg/yourserver | admin@example.com)",
 )
-VRCHAT_GROUP_MAIN_ID = os.getenv("VRCHAT_GROUP_MAIN_ID", "grp_998c5578-c65c-4d20-b1e5-70cf3a724f32")
-VRCHAT_GROUP_AFTERDARK_ID = os.getenv("VRCHAT_GROUP_AFTERDARK_ID", "grp_d9a755a3-92aa-40b8-81ee-e8f98aec2589")
+VRCHAT_GROUP_ID = os.getenv("VRCHAT_GROUP_ID", "grp_998c5578-c65c-4d20-b1e5-70cf3a724f32")
+VRCHAT_AUDIT_LOG_CHANNEL_ID = int(os.getenv("VRCHAT_AUDIT_LOG_CHANNEL_ID", "0"))
+VRCHAT_INVITE_CHANNEL_ID = int(os.getenv("VRCHAT_INVITE_CHANNEL_ID", "0"))
+VRCHAT_STAFF_ROLE_IDS = _parse_int_list(os.getenv("VRCHAT_STAFF_ROLE_IDS", ""))
 
 # --- ROLES ---
 ROLE_18_PLUS = 1333922279532396567
