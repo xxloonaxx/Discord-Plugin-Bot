@@ -144,9 +144,7 @@ class VRChatCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.api_base = VRCHAT_API_BASE_URL.rstrip("/")
-        # Back to the proven login behavior from your original working version:
-        # use configured UA as-is (with sane fallback only when empty).
-        self.user_agent = (VRCHAT_USER_AGENT or "").strip() or "DiscordPluginBot/1.0 (contact: admin@example.com)"
+        self.user_agent = VRCHAT_USER_AGENT
         self.group_id = VRCHAT_GROUP_ID
 
         self.session: aiohttp.ClientSession | None = None
@@ -276,13 +274,12 @@ class VRChatCog(commands.Cog):
         if not self.session:
             return False
         for cookie in self.session.cookie_jar:
-            key = cookie.key.lower()
-            if key == "auth" or "auth" in key or "session" in key:
+            if cookie.key.lower() == "auth":
                 return True
         return False
 
     def _is_authenticated(self) -> bool:
-        return self._has_session_auth_cookie() or self.login_pending_2fa or bool(self.logged_in_user)
+        return self._has_session_auth_cookie() or self.login_pending_2fa
 
     async def _ensure_authenticated(self, interaction: discord.Interaction) -> bool:
         if self._is_authenticated():

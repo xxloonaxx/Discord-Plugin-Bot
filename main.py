@@ -36,6 +36,8 @@ BASE_UPDATABLE_FILES: Final[dict[str, str]] = {
     "vip.py": "cogs/vip.py",
     "music.py": "cogs/music.py",
     "fun.py": "cogs/fun.py",
+    "vrchat.py": "cogs/vrchat.py",
+    "moderation.py": "cogs/moderation.py",
 }
 UPDATE_FILE_INDEX: dict[str, str] = dict(BASE_UPDATABLE_FILES)
 
@@ -393,6 +395,75 @@ async def update_file_cmd(
         ),
         ephemeral=True,
     )
+
+
+@bot.tree.command(
+    name="update_all",
+    description="Aktualisiert alle indexierten Dateien von GitHub und startet den Bot neu.",
+)
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(branch="Optionaler Branch für den Komplett-Update-Lauf")
+async def update_all_cmd(interaction: discord.Interaction, branch: str | None = None) -> None:
+    await interaction.response.defer(ephemeral=True)
+    branch_name = branch.strip() if branch else None
+    new_entries = await sync_remote_cog_index(branch_name)
+    raw_base = resolve_raw_base_url(branch_override=branch_name)
+    if not raw_base:
+        return await interaction.followup.send(
+            "❌ Setze `GITHUB_UPDATE_BASE_RAW_URL` oder `GITHUB_UPDATE_REPO` in der .env.",
+            ephemeral=True,
+        )
+
+    updated: list[str] = []
+    failed: list[str] = []
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
+        for key, target_rel_path in sorted(UPDATE_FILE_INDEX.items()):
+            if ".." in target_rel_path or target_rel_path.startswith("/"):
+                failed.append(f"{key} (invalid path)")
+                continue
+            raw_url = f"{raw_base.rstrip('/')}/{target_rel_path}"
+            try:
+                async with session.get(raw_url) as response:
+                    if response.status != 200:
+                        failed.append(f"{key} ({response.status})")
+                        continue
+                    content = await response.text()
+            except Exception:
+                failed.append(f"{key} (network)")
+                continue
+
+            if not content.strip():
+                failed.append(f"{key} (empty)")
+                continue
+
+            Path(target_rel_path).write_text(content, encoding="utf-8")
+            updated.append(target_rel_path)
+
+    for rel_path in updated:
+        target_path = Path(rel_path)
+        if target_path.parts and target_path.parts[0] == "cogs" and target_path.suffix == ".py":
+            extension_name = f"cogs.{target_path.stem}"
+            try:
+                if extension_name in bot.extensions:
+                    await bot.reload_extension(extension_name)
+                else:
+                    await bot.load_extension(extension_name)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Reload fehlgeschlagen für %s: %s", extension_name, exc)
+
+    await interaction.followup.send(
+        (
+            f"✅ Update-All abgeschlossen.\n"
+            f"Branch: `{branch_name or GITHUB_UPDATE_BRANCH or 'main'}`\n"
+            f"Neu erkannt: `{new_entries}`\n"
+            f"Aktualisiert: `{len(updated)}`\n"
+            f"Fehler: `{len(failed)}`\n"
+            "🔁 Neustart wird jetzt ausgeführt..."
+        ),
+        ephemeral=True,
+    )
+    await asyncio.sleep(1.0)
+    os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
 @bot.tree.command(name="list_update_files", description="Zeigt alle Dateien, die über /update_file gezogen werden können.")

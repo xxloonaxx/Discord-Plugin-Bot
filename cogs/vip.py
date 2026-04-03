@@ -19,6 +19,9 @@ from config import (
     ROLES_STAFF,
     ROLES_VIP,
     ROLES_VIP_PLUS,
+    MOD_LOG_CHANNEL_NSFW,
+    MOD_LOG_CHANNEL_SFW,
+    NSFW_SERVER_ID,
 )
 
 GUILD_ID = DISCORD_GUILD_ID
@@ -525,6 +528,47 @@ class VIPCog(commands.Cog):
 
     async def cog_unload(self):
         self.auto_audit.cancel()
+
+    async def _mirror_ban_action(self, source_guild: discord.Guild, user: discord.User | discord.Member, *, unban: bool) -> None:
+        if source_guild.id == NSFW_SERVER_ID:
+            target_guild_id = GUILD_ID
+            target_log_channel = MOD_LOG_CHANNEL_SFW
+        elif source_guild.id == GUILD_ID:
+            target_guild_id = NSFW_SERVER_ID
+            target_log_channel = MOD_LOG_CHANNEL_NSFW
+        else:
+            return
+
+        target_guild = self.bot.get_guild(target_guild_id)
+        if not target_guild:
+            return
+
+        action = "unbanned" if unban else "banned"
+        try:
+            if unban:
+                await target_guild.unban(user, reason=f"Mirror-unban from {source_guild.id}")
+            else:
+                await target_guild.ban(user, reason=f"Mirror-ban from {source_guild.id}", delete_message_days=0)
+        except Exception:
+            return
+
+        log_channel = self.bot.get_channel(target_log_channel)
+        if log_channel:
+            try:
+                await log_channel.send(
+                    f"🔁 Cross-Server Sync: `{user}` (`{user.id}`) wurde im Zielserver {action} "
+                    f"(Quelle: `{source_guild.name}` / `{source_guild.id}`)."
+                )
+            except Exception:
+                pass
+
+    @commands.Cog.listener()
+    async def on_member_ban(self, guild: discord.Guild, user: discord.User | discord.Member):
+        await self._mirror_ban_action(guild, user, unban=False)
+
+    @commands.Cog.listener()
+    async def on_member_unban(self, guild: discord.Guild, user: discord.User | discord.Member):
+        await self._mirror_ban_action(guild, user, unban=True)
 
     @tasks.loop(minutes=30)
     async def auto_audit(self):

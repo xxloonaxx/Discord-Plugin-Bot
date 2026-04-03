@@ -32,6 +32,8 @@ VRCHAT_USER_AGENT = os.getenv(
     "DiscordPluginBot/1.0 (contact: discord.gg/yourserver | admin@example.com)",
 )
 VRCHAT_GROUP_ID = os.getenv("VRCHAT_GROUP_ID", "grp_998c5578-c65c-4d20-b1e5-70cf3a724f32")
+VRCHAT_GROUP_MAIN_ID = os.getenv("VRCHAT_GROUP_MAIN_ID", VRCHAT_GROUP_ID)
+VRCHAT_GROUP_AFTERDARK_ID = os.getenv("VRCHAT_GROUP_AFTERDARK_ID", "grp_d9a755a3-92aa-40b8-81ee-e8f98aec2589")
 VRCHAT_AUDIT_LOG_CHANNEL_ID = int(os.getenv("VRCHAT_AUDIT_LOG_CHANNEL_ID", "0"))
 VRCHAT_INVITE_CHANNEL_ID = int(os.getenv("VRCHAT_INVITE_CHANNEL_ID", "0"))
 VRCHAT_STAFF_ROLE_IDS: list[int] = []
@@ -43,6 +45,12 @@ for _role_token in os.getenv("VRCHAT_STAFF_ROLE_IDS", "1484342349633945711").spl
         VRCHAT_STAFF_ROLE_IDS.append(int(_role_token))
     except ValueError:
         continue
+
+# --- MODERATION / CROSS-SERVER ---
+NSFW_SERVER_ID = int(os.getenv("NSFW_SERVER_ID", "1489273748459749422"))
+NSFW_BANROOM_ID = int(os.getenv("NSFW_BANROOM_ID", "1489276271300186355"))
+MOD_LOG_CHANNEL_NSFW = int(os.getenv("MOD_LOG_CHANNEL_NSFW", "1489439379469369535"))
+MOD_LOG_CHANNEL_SFW = int(os.getenv("MOD_LOG_CHANNEL_SFW", "1333922290332733489"))
 
 # --- ROLES ---
 ROLE_18_PLUS = 1333922279532396567
